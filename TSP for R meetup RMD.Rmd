@@ -1,0 +1,253 @@
+---
+title: "Traveling Salesman Problem Introduction"
+output:
+  html_document:
+    df_print: paged
+---
+
+This Markdown document is a way to introduce audiences to the Traveling Salesman Problem in R. 
+
+```{r load packages}
+
+
+library(tidyverse)
+library(TSP)
+library(ggplot2)
+library(leaflet)
+#these two libraries have functions to calculate Haversine (as the crow flies)
+#distances between two latitude/longitude points
+library(geosphere)
+library(fossil)
+library(combinat)
+
+
+#register DistanceConvert function
+
+DistanceConvert <- function(
+  x,
+  fromunit=c('meters','kilometers','miles','inches','feet'),
+  tounit=c('meters','kilometers','miles','inches','feet')
+){
+  
+  if(!(fromunit %in% c('meters','kilometers','miles','inches','feet'))){
+    stop('arguments fromunit and tounit must be meters, kilometers, miles, inches, or feet')}
+  if(!(tounit %in% c('meters','kilometers','miles','inches','feet'))){
+    stop('arguments fromunit and tounit must be meters, kilometers, miles, inches, or feet')}
+     
+  #if(stopbinary){stop('arguments fromunit and tounit must be meters, kilometers, miles, inches, or feet')}
+  #first convert all to meters
+  if(fromunit=='meters'){multiplier <- 1}
+  if(fromunit=='kilometers'){multiplier <- 1000}
+  if(fromunit=='miles'){multiplier <- 1609.34}
+  if(fromunit=='inches'){multiplier <- 0.0253999368683}
+  if(fromunit=='feet'){multiplier <- 0.30479924241959999165}
+  
+  x_in_meters <- x*multiplier
+  
+  if(tounit=='meters'){multiplier <- 1}
+  if(tounit=='kilometers'){multiplier <- (1/1000)}
+  if(tounit=='miles'){multiplier <- 0.00062136964781923562616}
+  if(tounit=='inches'){multiplier <- 39.3701}
+  if(tounit=='feet'){multiplier <- 3.280841666667}
+  
+  return(x_in_meters*multiplier)
+}
+
+```
+
+
+
+```{r create data.frame of locations and find distances}
+
+city_loc_df <- cbind.data.frame(
+  Cities=c('San Diego, CA','Colorado Springs, CO','Charleston, SC','Tampa, FL','Indianapolis, IN','Montreal, QC','New York, NY','Washington, DC','Lake Nokomis, Minneapolis','St Cloud, MN','Valparaiso, IN','Honolulu, HI'),
+Longitude = c(-117.25107,-104.75395,-80.2501777,-82.57324,-86.13281,-73.60839,-74.13574,-77.12371,-93.23924,-94.16519,-87.06825,-157.85979),
+Latitude = c(32.91518,39.03251,32.9998005,28.42039,39.94343,45.58328,40.88029,38.68394,44.9124,45.54198,41.45914,21.3022),
+stringsAsFactors=FALSE)
+
+#there are 12! ~ 479M permutations here.  TSP to the rescue.
+
+city_loc_df$CityIndex <- seq(1,nrow(city_loc_df),1)
+
+head(city_loc_df)
+
+#use leaflet to sense-check city latitude/longitude
+map_leaflet <- leaflet() %>%
+  addProviderTiles(providers$OpenStreetMap) %>%
+ addPopups(city_loc_df$Longitude, city_loc_df$Latitude, city_loc_df$Cities)
+
+map_leaflet
+
+```
+
+
+
+OK, the latitude/longitude I used look reasonable.  Now how to find out how far each city is from each other?
+
+
+
+```{r distance matrices}
+
+distance_matrix_earthdist <- fossil::earth.dist(lats = cbind(city_loc_df$Longitude,city_loc_df$Latitude),dist=FALSE)
+
+colnames(distance_matrix_earthdist) <- city_loc_df$Cities
+rownames(distance_matrix_earthdist) <-city_loc_df$Cities
+
+colnames(distance_matrix_earthdist)[1]
+row.names(distance_matrix_earthdist)[5]
+
+#find one example to sense-check it
+distance_matrix_earthdist[1,5]
+
+#I run 26.2 miles, not 41.2 kilometers. Convert to miles
+distance_matrix_earthdist <- DistanceConvert(x=distance_matrix_earthdist,fromunit='kilometers',tounit='miles')
+
+distance_matrix_earthdist[1,5]
+```
+
+
+Now that we have a pairwise distance matrix between all the cities, we can start the Traveling Salesman Problem.  In our case, the distance matrix is symmetrical (same distance from San Diego to Indianapolis, as back again).  Sometimes distance matrices are asymmetrical (e.g., it's faster to go from A to B than from B to A).  Symmetric and asymmetric TSP require different functions from the TSP package, so let's first check that the distance matrix is symmetrical.
+
+
+```{r check symmetry and run TSP}
+
+
+isSymmetric(distance_matrix_earthdist)
+
+#now comes some very package-specific syntax...
+
+#make the distance matrix an object of class 'TSP'.  Don't ask.
+tspinput<- as.TSP(distance_matrix_earthdist)
+ 
+#the TSP is solved via heuristics, and the TSP package requires
+#an argument to say which heuristic you want to try.  We will
+#use all available, then identify the heuristic that yields the shortest
+# "tour" (round trip).
+
+#first try with a single heuristic.
+tspout <- TSP::solve_TSP(tspinput,method='nearest_insertion')
+
+str(tspout)
+tspmethods=c("nearest_insertion", "farthest_insertion","cheapest_insertion",
+             "arbitrary_insertion","nn","repetitive_nn","two_opt")
+  
+tspresults <- lapply(tspmethods,FUN=function(m) solve_TSP(tspinput,method=m))
+
+#extract the tour lengths from tspresults
+tourlengths<- sapply(tspresults,tour_length)
+
+tourlengths
+
+#it was worth looking through all the heuristics.
+summary(tourlengths)
+
+print(max(tourlengths) - min(tourlengths))
+
+tsp_selected <- tspresults[[which.min(tourlengths)]]
+
+#it's not easy figuring out how to extract the tour order...
+tsp_selected
+
+tourorder <- as.numeric(tsp_selected)
+
+#merge route to city_loc_df
+
+df1 <- cbind.data.frame(CityIndex=tourorder, TourOrder=seq(1,length(tourorder),1))%>% dplyr::arrange(CityIndex)
+
+#now that df1 is arranged by the CityIndex (which is to say, in the same order
+#as the city names in city_loc_df), we can just tack the TourOrder
+#onto city_loc_df.
+city_loc_df_results <- city_loc_df %>% dplyr::left_join(df1) %>% dplyr::arrange(TourOrder)
+
+city_loc_df_results
+sbbox <- ggmap::make_bbox(lon = city_loc_df_results$Longitude, lat =city_loc_df_results$Latitude, f = .5)
+sq_map <- ggmap::get_map(location = sbbox, maptype = "satellite", source = "google")
+
+p1<- ggmap::ggmap(sq_map) + geom_path(data = city_loc_df_results, mapping = aes(x = Longitude, y = Latitude), color = "red")+geom_point(data = city_loc_df_results,mapping = aes(x = Longitude, y = Latitude),color='white')
+
+p1
+#double check the distance by adding up all the segments.
+#in a four city tour, the segments are:
+# first to second
+# second to third
+# third to fourth
+# fourth to first ... 
+#so in other words, there are N segments where there are N cities.
+
+n=nrow(city_loc_df_results)
+
+segment_distance <- numeric(length=n )
+
+#Brick, are you just looking at things in the office and saying that you love them?
+#I love loops.
+
+
+
+for(i in 1:n){
+  
+  if(i<n){
+    
+    segment_distance[i] <- as.numeric(fossil::earth.dist(
+      lats = rbind.data.frame(c(city_loc_df_results$Longitude[i],city_loc_df_results$Latitude[i]),
+                   c(city_loc_df_results$Longitude[i+1],city_loc_df_results$Latitude[i+1]))
+    ))
+  }
+  
+  if(i == n){
+    segment_distance[i] <- as.numeric(fossil::earth.dist(
+      lats = rbind.data.frame(c(city_loc_df_results$Longitude[i],city_loc_df_results$Latitude[i]),
+                   c(city_loc_df_results$Longitude[1],city_loc_df_results$Latitude[1]))
+    ))
+    
+  }
+}
+#convert from meters to miles
+  segment_distance <- DistanceConvert(x=segment_distance,fromunit='kilometers',tounit='miles')
+  
+sum(segment_distance)
+
+#Or, we could just use the build in function for this one: TSP::tour_length
+# tourorder is the order of cities that had the shortest tour length of all the heuristics.
+#check to see that tour_length yields the same results.
+
+n <- TSP::tour_length(x = TOUR(tourorder), tsp = as.TSP(distance_matrix_earthdist) )
+n
+
+```
+
+We see that these values agree... so we can trust that the route distances are being calculated correctly.
+
+But how close to optimal is it? 12! = 479M route options ... so let's limit the dataset a bit and compare heuristics to optimal.
+
+```{r new segment}
+
+
+citycount <- 10
+city_loc_df_limited <- city_loc_df[1:citycount,]
+distance_matrix_earthdist2 <- fossil::earth.dist(lats = cbind(city_loc_df_limited$Longitude,city_loc_df_limited$Latitude),dist=FALSE)
+
+tspmethods=c("nearest_insertion", "farthest_insertion","cheapest_insertion",
+             "arbitrary_insertion","nn","repetitive_nn","two_opt")
+
+tspinput <- as.TSP(distance_matrix_earthdist2)
+tspresults_limited <- lapply(tspmethods,FUN=function(m) solve_TSP(tspinput,method=m))
+
+tourlengths_limited<- sapply(tspresults_limited,tour_length)
+
+summary(tourlengths_limited)
+
+perms <- combinat::permn(1:citycount)
+length(perms)
+exhaustive_lengths <- rep(99999, length(perms))
+
+for(i in 1:length(perms)){
+  tourorder <- perms[[i]]
+  n <- TSP::tour_length(x = TOUR(tourorder), tsp = as.TSP(distance_matrix_earthdist2) )
+  exhaustive_lengths[i] <- n
+}
+
+summary(exhaustive_lengths)
+
+```
+
+Comparing the heuristic outputs ('tourlengths_limited') with the exhaustive evaluation of all routes ('exhaustive_lengths')...
